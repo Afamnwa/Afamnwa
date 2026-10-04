@@ -73,25 +73,30 @@
   }
 
   function viewLogin() {
-    const err = errBox();
-    const email = h('input', { type: 'email', autocomplete: 'username', required: true, value: state.pendingEmail || '' });
-    const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
-    const btn = h('button', { class: 'btn block', type: 'submit' }, 'Sign in');
-    const form = h('form', { novalidate: true, on: { submit: (e) => { e.preventDefault(); submitting(btn, async () => {
-      err.className = 'hidden';
-      try {
-        const r = await api('/auth/login', 'POST', { email: email.value, password: pw.value });
-        state.user = r.user; state.pendingEmail = '';
-        go('/course');
-      } catch (ex) {
-        if (ex.data && ex.data.needsVerification) { state.pendingEmail = email.value.trim(); state.verifyNote = ex.message; go('/verify'); }
-        else showMsg(err, ex.message);
-      }
-    }); } } }, err, field('Email address', email), field('Password', pw), btn,
-      h('div', { class: 'auth-links' },
-        h('a', { href: '#/forgot' }, 'Forgot password?'), h('a', { href: '#/register' }, 'Create an account')));
-    return authShell('FSGC City of Refuge', 'Fire Safety Academy', 'Sign in to continue your training', form);
-  }
+  const err = errBox();
+  const email = h('input', { type: 'email', autocomplete: 'username', required: true, value: state.pendingEmail || '' });
+  const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
+  const btn = h('button', { class: 'btn block', type: 'submit' }, 'Sign in');
+  const form = h('form', { novalidate: true, on: { submit: (e) => { e.preventDefault(); submitting(btn, async () => {
+    err.className = 'hidden';
+    try {
+      const r = await api('/auth/login', 'POST', { email: email.value, password: pw.value });
+      state.user = r.user; state.pendingEmail = '';
+      go('/course');
+    } catch (ex) {
+      if (ex.data && ex.data.needsVerification) { state.pendingEmail = email.value.trim(); state.verifyNote = ex.message; go('/verify'); }
+      else showMsg(err, ex.message);
+    }
+  }); } } }, err, field('Email address', email), field('Password', pw), btn,
+    h('div', { class: 'auth-links' },
+      h('a', { href: '#/forgot' }, 'Forgot password?'), h('a', { href: '#/register' }, 'Create an account')));
+
+  return authShell(
+    'FSGC City of Refuge', 
+    'Fire Safety Academy', 
+    [h('p', {}, 'Sign in to continue your training'), form]
+  );
+}
 
   function viewRegister() {
     const err = errBox();
