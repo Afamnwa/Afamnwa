@@ -90,7 +90,7 @@
     }); } } }, err, field('Email address', email), field('Password', pw), btn,
       h('div', { class: 'auth-links' },
         h('a', { href: '#/forgot' }, 'Forgot password?'), h('a', { href: '#/register' }, 'Create an account')));
-    return authShell('Fire Safety Academy', 'Sign in to continue your training', form);
+    return authShell('FSGC City of Refuge', 'Fire Safety Academy', 'Sign in to continue your training', form);
   }
 
   function viewRegister() {
