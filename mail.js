@@ -11,7 +11,7 @@ if (configured) {
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
   });
 }
-const FROM = process.env.MAIL_FROM || 'Fire Safety Academy <no-reply@example.com>';
+const FROM = process.env.MAIL_FROM || 'Fire Safety Academy <info@cityofrefuge-sheffield.org>';
 const APP_NAME = 'Fire Safety Academy';
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
