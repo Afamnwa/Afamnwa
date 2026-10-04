@@ -68,7 +68,7 @@
   // ---------- auth screens ----------
   function authShell(title, subtitle, body) {
     return h('div', { class: 'auth-wrap' }, h('div', { class: 'auth-card' },
-      h('div', { class: 'auth-head' }, h('h1', {}, title), h('p', {}, subtitle)),
+      h('div', { class: 'auth-head' }, h('img', { class: 'logo-badge', src: '/logo.png', alt: 'City of Refuge logo', width: 56, height: 61 }), h('h1', {}, title), h('p', {}, subtitle)),
       h('div', { class: 'auth-body' }, body)));
   }
 
@@ -208,7 +208,7 @@
       h('span', { class: 'lines' }), h('span', { class: 'nav-text' }, 'Summary & certificate', h('small', {}, `${ov.passed} of ${ov.total} sections passed`)),
       ov.completed ? h('span', { class: 'tick' }, '✓') : h('span', { class: 'ring' + (activeId === 'summary' ? ' cur' : '') }));
     return h('aside', { class: 'sidebar', 'aria-label': 'Course navigation' },
-      h('div', { class: 'side-head' }, h('h2', {}, 'Fire safety awareness'), h('div', { class: 'pct' }, `${ov.percent}% COMPLETE`), progressBar(ov.percent)),
+      h('div', { class: 'side-head' }, h('img', { class: 'logo-badge', src: '/logo.png', alt: 'City of Refuge logo', width: 56, height: 61 }), h('h2', {}, 'Fire safety awareness'), h('div', { class: 'pct' }, `${ov.percent}% COMPLETE`), progressBar(ov.percent)),
       h('ul', { class: 'nav-list' }, items),
       h('div', { class: 'nav-group' }, 'Conclusion'),
       h('ul', { class: 'nav-list' }, h('li', {}, sum)),
@@ -218,12 +218,12 @@
   function adminSidebar(active) {
     const link = (key, href, label) => h('li', {}, h('a', { class: 'nav-item' + (active === key ? ' active' : ''), href }, h('span', { class: 'nav-text' }, label)));
     return h('aside', { class: 'sidebar' },
-      h('div', { class: 'side-head' }, h('h2', {}, 'Administration'), h('div', { class: 'pct' }, 'FIRE SAFETY ACADEMY')),
+      h('div', { class: 'side-head' }, h('img', { class: 'logo-badge', src: '/logo.png', alt: 'City of Refuge logo', width: 56, height: 61 }), h('h2', {}, 'Administration'), h('div', { class: 'pct' }, 'FIRE SAFETY ACADEMY')),
       h('ul', { class: 'nav-list' }, link('dash', '#/admin', 'Dashboard'), link('users', '#/admin/users', 'Manage users'), link('audit', '#/admin/audit', 'Audit log'), link('back', '#/course', '← Back to course')));
   }
 
   function simpleSidebar() {
-    return h('aside', { class: 'sidebar' }, h('div', { class: 'side-head' }, h('h2', {}, 'Fire safety awareness'), h('div', { class: 'pct' }, 'FIRE SAFETY ACADEMY')));
+    return h('aside', { class: 'sidebar' }, h('div', { class: 'side-head' }, h('img', { class: 'logo-badge', src: '/logo.png', alt: 'City of Refuge logo', width: 56, height: 61 }), h('h2', {}, 'Fire safety awareness'), h('div', { class: 'pct' }, 'FIRE SAFETY ACADEMY')));
   }
   function plainSidebar(ov) { return ov ? courseSidebar(ov, 'account') : (state.user && state.user.role === 'admin' ? adminSidebar('') : simpleSidebar()); }
 
@@ -298,7 +298,8 @@
             !r.passed ? h('button', { class: 'btn', type: 'button', on: { click: () => { renderQuiz(); } } }, 'Try again') : null,
             !r.passed ? h('button', { class: 'btn secondary', type: 'button', on: { click: () => window.scrollTo({ top: 0, behavior: 'smooth' }) } }, 'Review the lesson') : null,
             r.passed && r.next ? h('a', { class: 'btn', href: '#/course/' + r.next }, 'Next section →') : null,
-            r.passed && !r.next ? h('a', { class: 'btn', href: '#/summary' }, 'View summary & certificate →') : null)),
+            r.passed && !r.next ? h('a', { class: 'btn', href: '#/summary' }, 'View summary & certificate →') : null,
+            r.overview && r.overview.completed ? h('a', { class: 'btn secondary', href: '/api/certificate/pdf', download: 'Fire-Safety-Certificate.pdf' }, '⬇ Download certificate (PDF)') : null)),
         h('div', { class: 'card' }, h('h3', {}, 'Review your answers'), review));
       quizBox.firstChild.querySelector('.row').style.justifyContent = 'center';
       quizBox.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -332,11 +333,14 @@
   }
   function certificate(c) {
     return h('div', {}, h('div', { class: 'cert' },
+      h('img', { class: 'cert-logo', src: '/logo.png', alt: 'City of Refuge logo', width: 83, height: 90 }),
       h('p', { class: 'eyebrow' }, 'Fire Safety Academy'), h('h2', {}, 'Certificate of Completion'),
       h('p', {}, 'This certifies that'), h('div', { class: 'name' }, c.name),
       h('p', {}, 'has successfully completed Fire Safety Awareness, including fire hazards, prevention, response, fire extinguishers and fire drills, with an average score of ', h('b', {}, c.average + '%'), '.'),
-      h('p', { class: 'muted' }, 'Completed on ' + fmtDate(c.date))),
-      h('p', { class: 'no-print' }, h('button', { class: 'btn', type: 'button', on: { click: () => window.print() } }, 'Print or save as PDF')));
+      h('p', { class: 'muted' }, 'Completed on ' + fmtDate(c.date)), h('p', { class: 'muted small' }, 'Certificate no. ' + c.number)),
+      h('div', { class: 'row no-print cert-actions' },
+        h('a', { class: 'btn', href: '/api/certificate/pdf', download: 'Fire-Safety-Certificate.pdf' }, '⬇ Download certificate (PDF)'),
+        h('button', { class: 'btn secondary', type: 'button', on: { click: () => window.print() } }, 'Print')));
   }
 
   // ---------- account ----------

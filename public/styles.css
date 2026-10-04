@@ -175,3 +175,10 @@ td .bar { min-width: 90px; }
   .content { max-width: none; padding: 0; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+.logo-badge { display: block; background: #fff; border-radius: 10px; padding: 4px; width: 56px; height: auto; margin-bottom: .8rem; box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+.auth-head .logo-badge { width: 64px; }
+.cert-logo { display: block; margin: 0 auto .6rem; height: 90px; width: auto; }
+.cert-actions { margin-top: 1rem; }
+.cert { border-color: #13294b; }
+.cert h2 { color: #13294b; }
