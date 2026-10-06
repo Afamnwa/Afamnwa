@@ -1,20 +1,45 @@
 'use strict';
 const nodemailer = require('nodemailer');
 
-const configured = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+const RESEND_KEY = process.env.RESEND_API_KEY || '';
+const smtpConfigured = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+const configured = !!RESEND_KEY || smtpConfigured;
+const FROM = process.env.MAIL_FROM || 'Fire Safety Academy <no-reply@example.com>';
+const APP_NAME = 'Fire Safety Academy';
+const RESEND_URL = process.env.RESEND_API_URL || 'https://api.resend.com/emails';
+
 let transporter = null;
-if (configured) {
+if (!RESEND_KEY && smtpConfigured) {
   transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
     secure: String(process.env.SMTP_SECURE || 'false') === 'true',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000
   });
 }
-const FROM = process.env.MAIL_FROM || 'Fire Safety Academy <info@cityofrefuge-sheffield.org>';
-const APP_NAME = 'Fire Safety Academy';
+
+console.log(RESEND_KEY ? `[mail] Using Resend HTTPS API. From: ${FROM}`
+  : smtpConfigured ? `[mail] Using SMTP ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || 587}. From: ${FROM}`
+  : '[mail] NO email provider configured: codes are printed to this log only.');
+if (configured && /example\.com/.test(FROM)) console.log('[mail] WARNING: MAIL_FROM is not set to an address on your verified domain, so the provider will reject emails.');
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function viaResend(payload) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const r = await fetch(RESEND_URL, {
+      method: 'POST', signal: ctl.signal,
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const body = await r.text();
+    if (!r.ok) throw new Error(`Resend rejected the email (HTTP ${r.status}): ${body.slice(0, 300)}`);
+    return body;
+  } finally { clearTimeout(t); }
+}
 
 async function sendOtp(to, name, code, purpose) {
   const verify = purpose === 'verify';
@@ -29,11 +54,17 @@ async function sendOtp(to, name, code, purpose) {
     <p>This code expires in 10 minutes. If you did not request it, you can ignore this email.</p></div>`;
 
   if (!configured) {
-    // Development only: no SMTP set, so print the code to the server console. Never exposed to the browser.
-    console.log(`[DEV MAIL - SMTP not configured] To: ${to} | ${purpose.toUpperCase()} code: ${code}`);
+    console.log(`[DEV MAIL - no email provider configured] To: ${to} | ${purpose.toUpperCase()} code: ${code}`);
     return;
   }
-  await transporter.sendMail({ from: FROM, to, subject, text, html });
+  try {
+    if (RESEND_KEY) await viaResend({ from: FROM, to: [to], subject, text, html });
+    else await transporter.sendMail({ from: FROM, to, subject, text, html });
+    console.log(`[mail] ${purpose} email accepted for delivery to ${to.replace(/^(.).*(@.*)$/, '$1***$2')}`);
+  } catch (e) {
+    console.error(`[mail] FAILED to send ${purpose} email: ${e.message}`);
+    throw e;
+  }
 }
 
 module.exports = { sendOtp, configured };
