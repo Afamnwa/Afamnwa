@@ -182,3 +182,6 @@ td .bar { min-width: 90px; }
 .cert-actions { margin-top: 1rem; }
 .cert { border-color: #13294b; }
 .cert h2 { color: #13294b; }
+
+.asset-preview { display: block; max-width: 320px; max-height: 120px; margin: .6rem 0 1rem; padding: .5rem; background: #fff; border: 1px dashed var(--line); border-radius: 8px; object-fit: contain; }
+input[type=file] { width: 100%; padding: .5rem 0; }

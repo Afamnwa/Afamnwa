@@ -45,6 +45,9 @@
   }
 
   const state = { user: null, pendingEmail: '', passMark: 55 };
+  const isAdmin = (u) => !!u && (u.role === 'admin' || u.role === 'superadmin');
+  const isSuper = (u) => !!u && u.role === 'superadmin';
+  const ROLE_LABEL = { learner: 'Learner', admin: 'Administrator', superadmin: 'Super Admin' };
   const go = (p) => { if (location.hash === '#' + p) render(); else location.hash = p; };
   const PUBLIC = ['login', 'register', 'verify', 'forgot', 'reset'];
 
@@ -73,30 +76,25 @@
   }
 
   function viewLogin() {
-  const err = errBox();
-  const email = h('input', { type: 'email', autocomplete: 'username', required: true, value: state.pendingEmail || '' });
-  const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
-  const btn = h('button', { class: 'btn block', type: 'submit' }, 'Sign in');
-  const form = h('form', { novalidate: true, on: { submit: (e) => { e.preventDefault(); submitting(btn, async () => {
-    err.className = 'hidden';
-    try {
-      const r = await api('/auth/login', 'POST', { email: email.value, password: pw.value });
-      state.user = r.user; state.pendingEmail = '';
-      go('/course');
-    } catch (ex) {
-      if (ex.data && ex.data.needsVerification) { state.pendingEmail = email.value.trim(); state.verifyNote = ex.message; go('/verify'); }
-      else showMsg(err, ex.message);
-    }
-  }); } } }, err, field('Email address', email), field('Password', pw), btn,
-    h('div', { class: 'auth-links' },
-      h('a', { href: '#/forgot' }, 'Forgot password?'), h('a', { href: '#/register' }, 'Create an account')));
-
-  return authShell(
-    'FSGC City of Refuge', 
-    'Fire Safety Academy', 
-    [h('p', {}, 'Sign in to continue your training'), form]
-  );
-}
+    const err = errBox();
+    const email = h('input', { type: 'email', autocomplete: 'username', required: true, value: state.pendingEmail || '' });
+    const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true });
+    const btn = h('button', { class: 'btn block', type: 'submit' }, 'Sign in');
+    const form = h('form', { novalidate: true, on: { submit: (e) => { e.preventDefault(); submitting(btn, async () => {
+      err.className = 'hidden';
+      try {
+        const r = await api('/auth/login', 'POST', { email: email.value, password: pw.value });
+        state.user = r.user; state.pendingEmail = '';
+        go('/course');
+      } catch (ex) {
+        if (ex.data && ex.data.needsVerification) { state.pendingEmail = email.value.trim(); state.verifyNote = ex.message; go('/verify'); }
+        else showMsg(err, ex.message);
+      }
+    }); } } }, err, field('Email address', email), field('Password', pw), btn,
+      h('div', { class: 'auth-links' },
+        h('a', { href: '#/forgot' }, 'Forgot password?'), h('a', { href: '#/register' }, 'Create an account')));
+    return authShell('Fire Safety Academy', 'Sign in to continue your training', form);
+  }
 
   function viewRegister() {
     const err = errBox();
@@ -185,7 +183,7 @@
   function shell(sidebarEl, mainEl, opts) {
     const open = () => root.classList.toggle('open');
     const right = h('div', { class: 'right' },
-      state.user.role === 'admin' ? h('a', { class: 'btn ghost sm', href: (opts && opts.admin) ? '#/course' : '#/admin' }, (opts && opts.admin) ? 'Course view' : 'Admin') : null,
+      isAdmin(state.user) ? h('a', { class: 'btn ghost sm', href: (opts && opts.admin) ? '#/course' : '#/admin' }, (opts && opts.admin) ? 'Course view' : 'Admin') : null,
       h('a', { class: 'btn ghost sm', href: '#/account' }, state.user.name),
       h('button', { class: 'btn secondary sm', type: 'button', on: { click: async () => { try { await api('/auth/logout', 'POST'); } catch (_) {} state.user = null; go('/login'); } } }, 'Sign out'));
     const root = h('div', { class: 'shell' }, sidebarEl,
@@ -224,13 +222,13 @@
     const link = (key, href, label) => h('li', {}, h('a', { class: 'nav-item' + (active === key ? ' active' : ''), href }, h('span', { class: 'nav-text' }, label)));
     return h('aside', { class: 'sidebar' },
       h('div', { class: 'side-head' }, h('img', { class: 'logo-badge', src: '/logo.png', alt: 'City of Refuge logo', width: 56, height: 61 }), h('h2', {}, 'Administration'), h('div', { class: 'pct' }, 'FIRE SAFETY ACADEMY')),
-      h('ul', { class: 'nav-list' }, link('dash', '#/admin', 'Dashboard'), link('users', '#/admin/users', 'Manage users'), link('audit', '#/admin/audit', 'Audit log'), link('back', '#/course', '← Back to course')));
+      h('ul', { class: 'nav-list' }, link('dash', '#/admin', 'Dashboard'), link('users', '#/admin/users', 'Manage users'), link('audit', '#/admin/audit', 'Audit log'), isSuper(state.user) ? link('settings', '#/admin/settings', 'Certificate & backup') : null, link('back', '#/course', '← Back to course')));
   }
 
   function simpleSidebar() {
     return h('aside', { class: 'sidebar' }, h('div', { class: 'side-head' }, h('img', { class: 'logo-badge', src: '/logo.png', alt: 'City of Refuge logo', width: 56, height: 61 }), h('h2', {}, 'Fire safety awareness'), h('div', { class: 'pct' }, 'FIRE SAFETY ACADEMY')));
   }
-  function plainSidebar(ov) { return ov ? courseSidebar(ov, 'account') : (state.user && state.user.role === 'admin' ? adminSidebar('') : simpleSidebar()); }
+  function plainSidebar(ov) { return ov ? courseSidebar(ov, 'account') : (isAdmin(state.user) ? adminSidebar('') : simpleSidebar()); }
 
   // ---------- course ----------
   async function viewCourse(id) {
@@ -341,7 +339,7 @@
       h('img', { class: 'cert-logo', src: '/logo.png', alt: 'City of Refuge logo', width: 83, height: 90 }),
       h('p', { class: 'eyebrow' }, 'Fire Safety Academy'), h('h2', {}, 'Certificate of Completion'),
       h('p', {}, 'This certifies that'), h('div', { class: 'name' }, c.name),
-      h('p', {}, 'has successfully completed Fire Safety Awareness, including fire hazards, prevention, response, fire extinguishers and fire drills, with an average score of ', h('b', {}, c.average + '%'), '.'),
+      h('p', {}, 'has successfully completed Fire Safety Awareness, including fire hazards, prevention, response, fire extinguishers and fire drills.'),
       h('p', { class: 'muted' }, 'Completed on ' + fmtDate(c.date)), h('p', { class: 'muted small' }, 'Certificate no. ' + c.number)),
       h('div', { class: 'row no-print cert-actions' },
         h('a', { class: 'btn', href: '/api/certificate/pdf', download: 'Fire-Safety-Certificate.pdf' }, '⬇ Download certificate (PDF)'),
@@ -351,7 +349,7 @@
   // ---------- account ----------
   async function viewAccount() {
     let ov = null;
-    if (!state.user.must_change_password && (state.user.course_access || state.user.role === 'admin')) { try { ov = await api('/course'); } catch (_) {} }
+    if (!state.user.must_change_password && (state.user.course_access || isAdmin(state.user))) { try { ov = await api('/course'); } catch (_) {} }
     const err = errBox();
     const cur = h('input', { type: 'password', autocomplete: 'current-password', required: true });
     const n1 = h('input', { type: 'password', autocomplete: 'new-password', required: true });
@@ -364,7 +362,7 @@
     }); } } }, err, field('Current password', cur), field('New password', n1, 'At least 10 characters with upper-case, lower-case and a number.'), field('Confirm new password', n2), btn);
     const main = h('div', {}, h('h1', {}, 'My account'),
       state.user.must_change_password ? h('div', { class: 'alert info' }, 'For your security, please choose a new password before continuing.') : null,
-      h('div', { class: 'card' }, h('h3', {}, 'Details'), h('p', {}, h('b', {}, 'Name: '), state.user.name), h('p', {}, h('b', {}, 'Email: '), state.user.email), h('p', {}, h('b', {}, 'Role: '), state.user.role)),
+      h('div', { class: 'card' }, h('h3', {}, 'Details'), h('p', {}, h('b', {}, 'Name: '), state.user.name), h('p', {}, h('b', {}, 'Email: '), state.user.email), h('p', {}, h('b', {}, 'Role: '), ROLE_LABEL[state.user.role] || state.user.role)),
       h('div', { class: 'card' }, h('h3', {}, 'Change password'), form));
     mount(shell(plainSidebar(ov), main));
   }
@@ -380,7 +378,7 @@
     const stat = (n, l) => h('div', { class: 'stat' }, h('b', {}, String(n)), h('span', { class: 'muted small' }, l));
     mount(shell(adminSidebar('dash'), h('div', {}, h('h1', {}, 'Dashboard'),
       h('div', { class: 'stats' }, stat(s.users, 'Total users'), stat(s.learners, 'Learners'), stat(s.admins, 'Admins'), stat(s.completed, 'Completed all sections'), stat(s.inProgress, 'In progress'), stat(s.unverified, 'Unverified emails'), stat(s.suspended, 'Suspended'), stat(s.attempts, 'Quiz attempts')),
-      h('a', { class: 'btn', href: '#/admin/users' }, 'Manage users')), { admin: true, wide: true }));
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/admin/users' }, 'Manage users'), isSuper(state.user) ? h('a', { class: 'btn secondary', href: '#/admin/settings' }, 'Certificate signature & backup') : null)), { admin: true, wide: true }));
   }
 
   async function viewAdminUsers() {
@@ -390,7 +388,7 @@
       const r = await api('/admin/users?q=' + encodeURIComponent(q));
       body.replaceChildren(...r.users.map((u) => h('tr', {},
         h('td', {}, h('b', {}, u.name), h('div', { class: 'muted small' }, u.email)),
-        h('td', {}, h('span', { class: 'pill ' + (u.role === 'admin' ? 'teal' : '') }, u.role)),
+        h('td', {}, h('span', { class: 'pill ' + (u.role === 'superadmin' ? 'amber' : u.role === 'admin' ? 'teal' : '') }, ROLE_LABEL[u.role] || u.role)),
         h('td', {}, u.status === 'suspended' ? h('span', { class: 'pill red' }, 'Suspended') : u.locked ? h('span', { class: 'pill amber' }, 'Locked') : h('span', { class: 'pill green' }, 'Active'), ' ', u.email_verified ? null : h('span', { class: 'pill amber' }, 'Unverified'), ' ', u.course_access ? null : h('span', { class: 'pill red' }, 'No access')),
         h('td', {}, progressBar(u.percent, true), h('span', { class: 'small muted' }, `${u.passedSections}/${u.totalSections} passed`)),
         h('td', { class: 'small' }, fmt(u.last_login)),
@@ -412,7 +410,7 @@
   function addUserForm(done) {
     const err = errBox();
     const name = h('input', { type: 'text', required: true }), email = h('input', { type: 'email', required: true }), pw = h('input', { type: 'password', autocomplete: 'new-password', required: true });
-    const role = h('select', {}, h('option', { value: 'learner' }, 'Learner'), h('option', { value: 'admin' }, 'Administrator'));
+    const role = h('select', {}, h('option', { value: 'learner' }, 'Learner'), h('option', { value: 'admin' }, 'Administrator'), isSuper(state.user) ? h('option', { value: 'superadmin' }, 'Super Admin') : null);
     const btn = h('button', { class: 'btn', type: 'submit' }, 'Create user');
     return h('form', { novalidate: true, on: { submit: (e) => { e.preventDefault(); submitting(btn, async () => {
       try { await api('/admin/users', 'POST', { name: name.value, email: email.value, password: pw.value, role: role.value }); toast('User created. They must change the password at first sign-in.'); await done(); }
@@ -428,7 +426,7 @@
     const act = async (fn, okMsg) => { try { await fn(); if (okMsg) toast(okMsg); await reload(); } catch (ex) { toast(ex.message, true); } };
 
     const name = h('input', { type: 'text', value: u.name }), email = h('input', { type: 'email', value: u.email });
-    const role = h('select', {}, ['learner', 'admin'].map((r) => h('option', { value: r, selected: u.role === r }, r === 'admin' ? 'Administrator' : 'Learner')));
+    const role = h('select', {}, ['learner', 'admin'].concat(isSuper(state.user) || u.role === 'superadmin' ? ['superadmin'] : []).map((r) => h('option', { value: r, selected: u.role === r }, ROLE_LABEL[r])));
     const status = h('select', {}, ['active', 'suspended'].map((r) => h('option', { value: r, selected: u.status === r }, r[0].toUpperCase() + r.slice(1))));
     const access = h('input', { type: 'checkbox', checked: u.course_access }), verified = h('input', { type: 'checkbox', checked: u.email_verified });
     const saveBtn = h('button', { class: 'btn', type: 'submit' }, 'Save changes');
@@ -474,6 +472,65 @@
     mount(shell(adminSidebar('audit'), h('div', {}, h('h1', {}, 'Audit log'), h('div', { class: 'card table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['When', 'Actor', 'Action', 'Target', 'Detail', 'IP'].map((x) => h('th', {}, x)))), h('tbody', {}, rows)))), { admin: true, wide: true }));
   }
 
+
+  // ---------- Super Admin: certificate signature / logo / backup ----------
+  async function viewAdminSettings() {
+    const [cs, bk] = await Promise.all([api('/admin/certificate-settings'), api('/admin/backup/status')]);
+    const reload = () => viewAdminSettings();
+
+    function imageCard(kind, title, help, info) {
+      const err = errBox();
+      const file = h('input', { type: 'file', accept: 'image/png,image/jpeg' });
+      const preview = info.has ? h('img', { class: 'asset-preview', src: '/api/admin/assets/' + kind + '?v=' + (info.updatedAt || 0), alt: 'Current ' + kind }) : h('p', { class: 'muted small' }, 'Nothing uploaded yet.');
+      const up = h('button', { class: 'btn', type: 'button' }, info.has ? 'Replace' : 'Upload');
+      up.addEventListener('click', () => submitting(up, async () => {
+        try {
+          const f = file.files[0];
+          if (!f) throw new Error('Choose a PNG or JPG file first.');
+          if (f.size > cs.maxKb * 1024) throw new Error('That file is too large. Maximum is ' + cs.maxKb + ' KB.');
+          const data = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => bad(new Error('Could not read the file.')); r.readAsDataURL(f); });
+          await api('/admin/assets/' + kind, 'POST', { data });
+          toast(title + ' saved.'); await reload();
+        } catch (ex) { showMsg(err, ex.message); }
+      }));
+      const del = info.has ? h('button', { class: 'btn secondary', type: 'button', on: { click: async () => { if (!confirm('Remove the ' + kind + '?')) return; try { await api('/admin/assets/' + kind, 'DELETE'); toast(title + ' removed.'); await reload(); } catch (ex) { toast(ex.message, true); } } } }, 'Remove') : null;
+      return h('div', { class: 'card' }, h('h3', {}, title), h('p', { class: 'muted small' }, help), err, preview, h('div', { class: 'field' }, file), h('div', { class: 'row' }, up, del));
+    }
+
+    const nameIn = h('input', { type: 'text', maxlength: 60, value: cs.signatoryName || '' });
+    const titleIn = h('input', { type: 'text', maxlength: 60, value: cs.signatoryTitle || '', placeholder: 'Authorised signatory' });
+    const saveBtn = h('button', { class: 'btn', type: 'submit' }, 'Save signatory');
+    const who = h('form', { class: 'card', novalidate: true, on: { submit: (e) => { e.preventDefault(); submitting(saveBtn, async () => { try { await api('/admin/certificate-settings', 'PUT', { signatoryName: nameIn.value, signatoryTitle: titleIn.value }); toast('Saved.'); } catch (ex) { toast(ex.message, true); } }); } } },
+      h('h3', {}, 'Signatory'), h('p', { class: 'muted small' }, 'Printed under the signature line on every certificate.'),
+      h('div', { class: 'grid2' }, field('Name', nameIn), field('Title (optional)', titleIn, 'Leave empty to print "Authorised signatory".')), saveBtn);
+
+    const when = (ms) => (ms ? fmt(ms) : 'never');
+    const run = h('button', { class: 'btn', type: 'button' }, 'Back up now');
+    run.addEventListener('click', () => submitting(run, async () => { try { const r = await api('/admin/backup/run', 'POST'); toast(r.skipped ? 'Already up to date.' : 'Backup saved.'); await reload(); } catch (ex) { toast(ex.message, true); } }));
+    const restore = h('button', { class: 'btn danger', type: 'button' }, 'Restore from GitHub');
+    restore.addEventListener('click', () => {
+      if (prompt('This REPLACES all users, progress and logs on this server with the copy stored on GitHub, and signs everyone out.\n\nType RESTORE to continue.') !== 'RESTORE') return;
+      submitting(restore, async () => { try { await api('/admin/backup/restore', 'POST', { confirm: 'RESTORE' }); state.user = null; toast('Restored. Please sign in again.'); go('/login'); } catch (ex) { toast(ex.message, true); } });
+    });
+    const line = (k, v) => h('p', {}, h('b', {}, k + ': '), v);
+    const backupCard = h('div', { class: 'card' }, h('h3', {}, 'Backup of logins and every change'),
+      bk.configured
+        ? h('div', { class: 'alert info' }, 'Connected to GitHub: ' + bk.repo + ' (branch ' + bk.branch + ', file ' + bk.file + '). Each change is committed automatically about ' + bk.delaySeconds + ' seconds after it happens.')
+        : h('div', { class: 'alert err' }, 'GitHub is not connected. Changes are only saved to a file on this server, which Render erases on every redeploy. Set GITHUB_TOKEN and GITHUB_BACKUP_REPO in your Render environment.'),
+      line('Last successful backup', when(bk.lastSuccess)), line('Waiting to be saved', bk.pending ? 'yes' : 'no'),
+      bk.lastCommit ? h('p', {}, h('a', { href: bk.lastCommit, target: '_blank', rel: 'noopener noreferrer' }, 'Latest commit on GitHub')) : null,
+      bk.lastError ? h('div', { class: 'alert err' }, bk.lastError) : null,
+      line('Stored', `${bk.counts.users} users, ${bk.counts.progress} progress rows, ${bk.counts.attempts} quiz attempts, ${bk.counts.audit} log entries`),
+      h('p', { class: 'muted small' }, 'The backup contains email addresses and password hashes. Keep the GitHub repository PRIVATE.'),
+      h('div', { class: 'row' }, run, h('a', { class: 'btn secondary', href: '/api/admin/backup/download', download: '' }, 'Download backup file'), bk.configured ? restore : null));
+
+    mount(shell(adminSidebar('settings'), h('div', {}, h('h1', {}, 'Certificate & backup'),
+      imageCard('signature', 'Certificate signature', 'Upload a PNG (transparent background works best) or JPG, up to ' + cs.maxKb + ' KB. It is printed above the signature line on every certificate.', cs.signature),
+      who,
+      imageCard('logo', 'Certificate logo (optional)', 'Replaces the default logo on certificates. PNG or JPG, up to ' + cs.maxKb + ' KB.', cs.logo),
+      backupCard), { admin: true, wide: true }));
+  }
+
   // ---------- router ----------
   function mount(el) { $app.replaceChildren(el); window.scrollTo(0, 0); }
   async function render() {
@@ -492,11 +549,12 @@
       if (route === 'summary') return await viewSummary();
       if (route === 'account') return await viewAccount();
       if (route === 'admin') {
-        if (state.user.role !== 'admin') return go('/course');
+        if (!isAdmin(state.user)) return go('/course');
         if (!parts[1]) return await viewAdminDash();
         if (parts[1] === 'users') return await viewAdminUsers();
         if (parts[1] === 'user') return await viewAdminUser(parts[2]);
         if (parts[1] === 'audit') return await viewAdminAudit();
+        if (parts[1] === 'settings') return isSuper(state.user) ? await viewAdminSettings() : go('/admin');
       }
       go('/course');
     } catch (ex) {
