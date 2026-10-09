@@ -15,12 +15,13 @@ const PDFDocument = require('pdfkit');
 const { sendOtp, configured: smtpConfigured } = require('./mail');
 const { PASS_MARK, sections } = require('./content');
 const { renderCertificate, certificateNumber } = require('./cert');
+
 const ORG_NAME = process.env.ORG_NAME || 'City of Refuge';
 const SIGNATORY = process.env.SIGNATORY_NAME || '';
 
 const PROD = process.env.NODE_ENV === 'production';
 // Administrators and Super Admins must enter an emailed code after their password. ADMIN_2FA=off is an emergency switch.
-const ADMIN_2FA = String(process.env.ADMIN_2FA || 'off').toLowerCase() !== 'off';
+const ADMIN_2FA = String(process.env.ADMIN_2FA || 'on').toLowerCase() !== 'off';
 const PORT = Number(process.env.PORT || 3000);
 const COOKIE = 'fsa_session';
 const SESSION_HOURS = 8;
@@ -57,6 +58,7 @@ app.use(helmet({
   hsts: PROD ? { maxAge: 31536000, includeSubDomains: true } : false,
   crossOriginEmbedderPolicy: false
 }));
+
 // Image uploads (base64 in JSON) need a bigger body limit than the rest of the API.
 app.use('/api/admin/assets', express.json({ limit: '700kb' }));
 app.use(express.json({ limit: '20kb' }));
@@ -112,17 +114,26 @@ function setSession(res, user) {
 
 // ---------- OTP ----------
 const hashOtp = (userId, purpose, code) => crypto.createHmac('sha256', secrets.OTP_SECRET).update(`${userId}:${purpose}:${code}`).digest('hex');
+
 async function issueOtp(user, purpose) {
   const last = db.prepare('SELECT created_at, used, expires_at FROM otps WHERE user_id=? AND purpose=? ORDER BY id DESC LIMIT 1').get(user.id, purpose);
   // Cooldown only while an earlier code is still valid; a used or expired code never blocks a fresh one.
   if (last && !last.used && last.expires_at > now() && now() - last.created_at < OTP_RESEND_MS) return false;
+  
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
   db.prepare('UPDATE otps SET used=1 WHERE user_id=? AND purpose=? AND used=0').run(user.id, purpose);
   db.prepare('INSERT INTO otps (user_id,purpose,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)')
     .run(user.id, purpose, hashOtp(user.id, purpose, code), now() + OTP_TTL_MS, now());
-  try { await sendOtp(user.email, user.name, code, purpose); } catch (e) { console.error('Mail send failed:', e.message); }
+
+  try {
+    await sendOtp(user.email, user.name, code, purpose);
+    console.log(`✅ OTP successfully issued and sent to ${user.email} (${purpose})`);
+  } catch (e) {
+    console.error(`❌ Mail send failed for ${user.email} (${purpose}):`, e);
+  }
   return true;
 }
+
 function checkOtp(user, purpose, code) {
   if (!/^\d{6}$/.test(String(code || ''))) return false;
   const row = db.prepare('SELECT * FROM otps WHERE user_id=? AND purpose=? AND used=0 ORDER BY id DESC LIMIT 1').get(user.id, purpose);
@@ -162,6 +173,7 @@ app.post('/api/auth/register', authLimiter, wrap(async (req, res) => {
   if (!validEmail(email)) return res.status(400).json({ error: 'Please enter a valid email address.' });
   const pw = passwordProblem(password);
   if (pw) return res.status(400).json({ error: pw });
+  
   const existing = getUserByEmail(email);
   const hash = await bcrypt.hash(password, 12);
   let user;
@@ -174,8 +186,8 @@ app.post('/api/auth/register', authLimiter, wrap(async (req, res) => {
     db.prepare('UPDATE users SET name=?, password_hash=? WHERE id=?').run(name, hash, existing.id);
     user = getUserById(existing.id);
   }
+  
   if (user) await issueOtp(user, 'verify');
-  // Same answer whether or not the email already existed (prevents account enumeration)
   res.json({ ok: true, message: 'If this email can be registered, a 6-digit confirmation code has been sent.' });
 }));
 
@@ -221,7 +233,7 @@ app.post('/api/auth/login', authLimiter, wrap(async (req, res) => {
     await issueOtp(user, 'verify');
     return res.status(403).json({ error: 'Please confirm your email first. We sent you a new code.', needsVerification: true });
   }
-  if (ADMIN_2FA && isAdminRole(user.role)) { // step 2 of 2: emailed code (see /api/auth/login-verify)
+  if (ADMIN_2FA && isAdminRole(user.role)) { // step 2 of 2: emailed code
     await issueOtp(user, 'login');
     return res.json({ ok: true, needs2fa: true, message: 'We emailed a 6-digit sign-in code to your address.' });
   }
@@ -311,7 +323,7 @@ app.get('/api/course/:id', auth, courseAccess, (req, res) => {
     id: s.id, index: i, title: s.title, summary: s.summary, videos: s.videos, body: s.body, status,
     next: sections[i + 1] ? sections[i + 1].id : null, passMark: PASS_MARK,
     progress: { lessonDone: !!(p && p.lesson_done), bestScore: p ? p.best_score : 0, lastScore: p ? p.last_score : 0, attempts: p ? p.attempts : 0, passed: !!(p && p.passed) },
-    quiz: s.quiz.map((q) => ({ q: q.q, options: q.options })) // answers are never sent here
+    quiz: s.quiz.map((q) => ({ q: q.q, options: q.options }))
   });
 });
 
@@ -365,7 +377,7 @@ app.post('/api/course/:id/quiz', quizLimiter, auth, courseAccess, (req, res) => 
     next: passed && sections[i + 1] ? sections[i + 1].id : null });
 });
 
-const asBuf = (v) => (v instanceof Uint8Array && v.length ? Buffer.from(v) : null); // BLOBs may come back as Buffer or Uint8Array
+const asBuf = (v) => (v instanceof Uint8Array && v.length ? Buffer.from(v) : null);
 function certificateData(user) {
   const ov = overview(user.id);
   if (!ov.completed) return null;
@@ -401,7 +413,7 @@ const userRow = (u) => {
 };
 const activeAdminCount = () => db.prepare("SELECT COUNT(*) c FROM users WHERE role IN ('admin','superadmin') AND status='active'").get().c;
 const activeSuperCount = () => db.prepare("SELECT COUNT(*) c FROM users WHERE role='superadmin' AND status='active'").get().c;
-// A normal Admin may not change, reset, sign out or delete a Super Admin account.
+
 admin.param('id', (req, res, next, id) => {
   if (req.method === 'GET') return next();
   const t = getUserById(Number(id));
@@ -539,6 +551,7 @@ admin.delete('/users/:id/progress/:sid', (req, res) => {
   audit(req, req.user, 'admin_reset_section', u.id, req.params.sid);
   res.json({ ok: true });
 });
+
 admin.delete('/users/:id/progress', (req, res) => {
   const u = getUserById(Number(req.params.id));
   if (!u) return res.status(404).json({ error: 'User not found.' });
@@ -588,7 +601,7 @@ admin.post('/assets/:kind', superOnly, (req, res) => {
   const kind = req.params.kind;
   if (!ASSETS[kind]) return res.status(404).json({ error: 'Not found.' });
   const raw = String(req.body.data || '').replace(/^data:[^,]*,/, '');
-  if (!/^[A-Za-z0-9+/=\s]+$/.test(raw) || !raw) return res.status(400).json({ error: 'Please choose an image file.' });
+  if (!/^[A-Za-z0-9+/=\s]+\$/.test(raw) || !raw) return res.status(400).json({ error: 'Please choose an image file.' });
   const buf = Buffer.from(raw, 'base64');
   if (buf.length > MAX_IMAGE_BYTES) return res.status(413).json({ error: `Image is too large. Maximum is ${MAX_IMAGE_BYTES / 1024} KB.` });
   if (!imageMime(buf)) return res.status(400).json({ error: 'Only PNG or JPG images are accepted.' });
@@ -648,9 +661,9 @@ setInterval(() => db.prepare('DELETE FROM otps WHERE created_at < ?').run(now() 
 (async () => {
   try { await backup.init(); } catch (e) { console.error('Backup start-up problem:', e.message); }
   app.listen(PORT, () => {
-  console.log(`Fire Safety Academy running on http://localhost:${PORT}`);
-  if (!smtpConfigured) console.log('NOTE: SMTP is not configured. Verification codes are printed here instead of being emailed. Set SMTP_* in .env for real email.');
-  if (!PROD) console.log('NOTE: NODE_ENV is not "production". Set NODE_ENV=production behind HTTPS to enable Secure cookies and HSTS.');
+    console.log(`🚀 Fire Safety Academy running on http://localhost:${PORT}`);
+    if (!smtpConfigured) console.log('⚠️ NOTE: SMTP is not configured. Verification codes are printed in terminal logs instead of being emailed. Set SMTP_* or EMAIL_* in Render Environment variables.');
+    if (!PROD) console.log('⚠️ NOTE: NODE_ENV is not "production". Set NODE_ENV=production behind HTTPS to enable Secure cookies and HSTS.');
   });
 })();
 
