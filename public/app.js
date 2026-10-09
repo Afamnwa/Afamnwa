@@ -340,16 +340,8 @@
     const ov = await api('/course');
     let certData = null;
     if (ov.completed) { try { certData = await api('/certificate'); } catch (_) {} }
-    const rows = ov.sections.map((s) => h('tr', {},
-      h('td', {}, s.title), h('td', {}, s.attempts ? s.bestScore + '%' : '—'), h('td', {}, String(s.attempts)),
-      h('td', {}, s.status === 'passed' ? h('span', { class: 'pill green' }, 'Passed') : s.status === 'locked' ? h('span', { class: 'pill' }, 'Locked') : s.attempts ? h('span', { class: 'pill red' }, 'Not passed') : h('span', { class: 'pill amber' }, 'Not started')),
-      h('td', {}, s.status === 'locked' ? '' : h('a', { href: '#/course/' + s.id }, s.status === 'passed' ? 'Review' : 'Open'))));
     const main = h('div', {},
       h('div', { class: 'eyebrow' }, 'Conclusion'), h('h1', {}, 'Summary & certificate'),
-      h('div', { class: 'card' },
-        h('div', { class: 'row between' }, h('h3', {}, 'Your training progress'), h('b', {}, `${ov.percent}% complete`)),
-        progressBar(ov.percent, true), h('p', { class: 'muted small' }, `${ov.passed} of ${ov.total} sections passed. The pass mark for each section is ${ov.passMark}%.`),
-        h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Best score', 'Attempts', 'Status', ''].map((t) => h('th', {}, t)))), h('tbody', {}, rows)))),
       certData ? certificate(certData) : h('div', { class: 'alert info' }, 'Pass all sections to unlock your certificate of completion.'));
     mount(shell(courseSidebar(ov, 'summary'), main));
   }
