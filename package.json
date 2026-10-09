@@ -4,7 +4,11 @@
   "description": "Secure fire safety training site with OTP email verification, quizzes and admin panel",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "backup": "node backup.js export",
+    "restore": "node backup.js import",
+    "backup:github": "node backup.js push",
+    "restore:github": "node backup.js pull"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
