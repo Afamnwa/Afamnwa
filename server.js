@@ -19,6 +19,8 @@ const ORG_NAME = process.env.ORG_NAME || 'City of Refuge';
 const SIGNATORY = process.env.SIGNATORY_NAME || '';
 
 const PROD = process.env.NODE_ENV === 'production';
+// Administrators and Super Admins must enter an emailed code after their password. ADMIN_2FA=off is an emergency switch.
+const ADMIN_2FA = String(process.env.ADMIN_2FA || 'on').toLowerCase() !== 'off';
 const PORT = Number(process.env.PORT || 3000);
 const COOKIE = 'fsa_session';
 const SESSION_HOURS = 8;
@@ -111,8 +113,9 @@ function setSession(res, user) {
 // ---------- OTP ----------
 const hashOtp = (userId, purpose, code) => crypto.createHmac('sha256', secrets.OTP_SECRET).update(`${userId}:${purpose}:${code}`).digest('hex');
 async function issueOtp(user, purpose) {
-  const last = db.prepare('SELECT created_at FROM otps WHERE user_id=? AND purpose=? ORDER BY id DESC LIMIT 1').get(user.id, purpose);
-  if (last && now() - last.created_at < OTP_RESEND_MS) return false; // cooldown
+  const last = db.prepare('SELECT created_at, used, expires_at FROM otps WHERE user_id=? AND purpose=? ORDER BY id DESC LIMIT 1').get(user.id, purpose);
+  // Cooldown only while an earlier code is still valid; a used or expired code never blocks a fresh one.
+  if (last && !last.used && last.expires_at > now() && now() - last.created_at < OTP_RESEND_MS) return false;
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
   db.prepare('UPDATE otps SET used=1 WHERE user_id=? AND purpose=? AND used=0').run(user.id, purpose);
   db.prepare('INSERT INTO otps (user_id,purpose,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)')
@@ -218,8 +221,23 @@ app.post('/api/auth/login', authLimiter, wrap(async (req, res) => {
     await issueOtp(user, 'verify');
     return res.status(403).json({ error: 'Please confirm your email first. We sent you a new code.', needsVerification: true });
   }
+  if (ADMIN_2FA && isAdminRole(user.role)) { // step 2 of 2: emailed code (see /api/auth/login-verify)
+    await issueOtp(user, 'login');
+    return res.json({ ok: true, needs2fa: true, message: 'We emailed a 6-digit sign-in code to your address.' });
+  }
   db.prepare('UPDATE users SET failed_logins=0, locked_until=0, last_login=? WHERE id=?').run(now(), user.id);
   audit(req, user, 'login', user.id);
+  setSession(res, user);
+  res.json({ ok: true, user: publicUser(getUserById(user.id)) });
+}));
+
+app.post('/api/auth/login-verify', otpLimiter, wrap(async (req, res) => {
+  const email = normEmail(req.body.email);
+  const user = validEmail(email) ? getUserByEmail(email) : null;
+  if (!user || !ADMIN_2FA || !isAdminRole(user.role) || user.status !== 'active' || !user.email_verified || user.locked_until > now()
+      || !checkOtp(user, 'login', req.body.otp)) return res.status(400).json({ error: GENERIC_CODE_ERR });
+  db.prepare('UPDATE users SET failed_logins=0, locked_until=0, last_login=? WHERE id=?').run(now(), user.id);
+  audit(req, user, 'login', user.id, 'with email code');
   setSession(res, user);
   res.json({ ok: true, user: publicUser(getUserById(user.id)) });
 }));

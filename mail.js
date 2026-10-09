@@ -17,10 +17,11 @@ const APP_NAME = 'Fire Safety Academy';
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 async function sendOtp(to, name, code, purpose) {
-  const verify = purpose === 'verify';
-  const subject = verify ? `Confirm your email: your code is ${code}` : `Password reset code: ${code}`;
+  const verify = purpose === 'verify', login = purpose === 'login';
+  const subject = verify ? `Confirm your email: your code is ${code}` : login ? `Your sign-in code: ${code}` : `Password reset code: ${code}`;
   const intro = verify
     ? 'Welcome! Enter this code to confirm your email address and activate your account.'
+    : login ? 'Someone just entered your password to sign in to the administration area. Enter this code to finish signing in. If it was not you, change your password.'
     : 'We received a request to reset your password. Enter this code to continue.';
   const text = `Hello ${name},\n\n${intro}\n\nYour code: ${code}\n\nIt expires in 10 minutes. If you did not request this, you can ignore this email.\n\n${APP_NAME}`;
   const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto">

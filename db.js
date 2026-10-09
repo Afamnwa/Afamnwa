@@ -49,18 +49,25 @@ const usersDDL = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
 
 db.exec(usersDDL('users') + ';\n');
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS otps (
+const OTPS_DDL = `CREATE TABLE IF NOT EXISTS otps (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  purpose TEXT NOT NULL CHECK (purpose IN ('verify','reset')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('verify','reset','login')),
   code_hash TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   used INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_otps_user ON otps(user_id, purpose);
+CREATE INDEX IF NOT EXISTS idx_otps_user ON otps(user_id, purpose);`;
+// Older databases only allow 'verify'/'reset' codes. One-time codes are short-lived, so just recreate the table.
+(function migrateOtps() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='otps'").get();
+  if (row && !row.sql.includes("'login'")) db.exec('DROP TABLE otps');
+})();
+db.exec(OTPS_DDL);
+
+db.exec(`
 CREATE TABLE IF NOT EXISTS progress (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   section_id TEXT NOT NULL,
@@ -153,7 +160,21 @@ seedAdmin();
 function ensureSuperAdmin() {
   const wanted = (process.env.SUPERADMIN_EMAIL || '').trim().toLowerCase();
   let target = null;
-  if (wanted) target = db.prepare("SELECT * FROM users WHERE email=? AND status='active'").get(wanted);
+  if (wanted) {
+    const u = db.prepare('SELECT * FROM users WHERE email=?').get(wanted);
+    if (!u) { // no such account yet: create it (password from SUPERADMIN_PASSWORD, or a random one printed once)
+      let password = process.env.SUPERADMIN_PASSWORD, generated = false;
+      if (!password) { password = crypto.randomBytes(9).toString('base64url') + 'aA1'; generated = true; }
+      db.prepare(`INSERT INTO users (email,name,password_hash,role,email_verified,must_change_password,created_at)
+                  VALUES (?,?,?,?,1,?,?)`).run(wanted, 'Super Administrator', bcrypt.hashSync(password, 12), 'superadmin', generated ? 1 : 0, Date.now());
+      console.log(`\n=== Super Admin account created for ${wanted} ===`);
+      if (generated) console.log('  Password:', password, '(shown once. You will be asked to change it at first login)');
+      console.log('========================================\n');
+      return;
+    }
+    if (!u.email_verified) { console.log(`SUPERADMIN_EMAIL ${wanted} is registered but its email is not confirmed yet. Confirm it with the emailed code, then restart.`); }
+    else if (u.status === 'active') target = u;
+  }
   if (!target && !db.prepare("SELECT id FROM users WHERE role='superadmin' LIMIT 1").get()) {
     target = db.prepare("SELECT * FROM users WHERE role='admin' AND status='active' ORDER BY id LIMIT 1").get();
   }

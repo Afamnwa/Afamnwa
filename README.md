@@ -35,7 +35,15 @@ printed in the server console only (never sent to the browser), which is fine fo
 - **Super Admin**: everything an Administrator can do, plus: upload the certificate **signature** and **logo**, set the signatory
   name/title, create or edit Super Admin accounts, and run/download/restore backups (`#/admin/settings`).
   A normal Administrator cannot edit, reset, sign out or delete a Super Admin. The last Super Admin cannot be removed.
-  The first Super Admin is `SUPERADMIN_EMAIL` (promoted if it exists, created if not). If that is not set, the oldest administrator is promoted.
+  The Super Admin is whoever `SUPERADMIN_EMAIL` names: if that account exists and its email is confirmed it is promoted when the site
+  starts; if it does not exist it is created (password from `SUPERADMIN_PASSWORD`, or a random one printed once in the Render logs).
+  If the variable is not set, the oldest administrator is promoted. A Super Admin is also an Administrator, so one role covers both.
+  Another Super Admin can also change anyone's role in **Manage users**.
+
+## Two-step sign-in for administrators
+After the password, every Administrator and Super Admin must enter a 6-digit code emailed to them (expires in 10 minutes, 5 tries,
+single use). Learners are not affected. This needs working email (SMTP / Resend), and `ADMIN_EMAIL` / `SUPERADMIN_EMAIL` must be real inboxes.
+Emergency switch if email is down: set `ADMIN_2FA=off`, sign in, fix email, then remove it.
 
 ## Backup to GitHub (logins and every change)
 Render's disk is erased on each deploy, so the database is copied to a **private** GitHub repo:
