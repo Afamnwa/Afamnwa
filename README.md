@@ -20,6 +20,7 @@ printed in the server console only (never sent to the browser), which is fine fo
 - Forgot password -> code emailed -> set a new password.
 - Six sections (hazards, prevention, response, extinguishers, drills...) each with YouTube videos, a lesson, and a 6-question quiz.
 - Quiz is marked instantly on the server. 55% or more passes and unlocks the next section. Retakes are unlimited.
+- When all sections are passed, users can download a professional A4 PDF certificate (logo, name, date, scores, certificate number).
 - Sidebar shows progress, ticks, locks. Summary page shows all scores and a printable certificate when all sections are passed.
 
 ## Admin panel (`#/admin`)

@@ -12,6 +12,9 @@ const jwt = require('jsonwebtoken');
 const { db, secrets, audit } = require('./db');
 const { sendOtp, configured: smtpConfigured } = require('./mail');
 const { PASS_MARK, sections } = require('./content');
+const { renderCertificate, certificateNumber } = require('./cert');
+const ORG_NAME = process.env.ORG_NAME || 'City of Refuge';
+const SIGNATORY = process.env.SIGNATORY_NAME || '';
 
 const PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT || 3000);
@@ -336,13 +339,29 @@ app.post('/api/course/:id/quiz', quizLimiter, auth, courseAccess, (req, res) => 
     next: passed && sections[i + 1] ? sections[i + 1].id : null });
 });
 
+function certificateData(user) {
+  const ov = overview(user.id);
+  if (!ov.completed) return null;
+  const rows = db.prepare('SELECT best_score, passed_at FROM progress WHERE user_id=?').all(user.id);
+  const date = Math.max(...rows.map((r) => r.passed_at || 0)) || Date.now();
+  const average = Math.round((rows.reduce((a, r) => a + r.best_score, 0) / rows.length) * 10) / 10;
+  return { name: user.name, completedAt: date, average, passMark: PASS_MARK, org: ORG_NAME, signatory: SIGNATORY,
+    number: certificateNumber(user.id, date), sections: ov.sections.map((s) => ({ title: s.title, score: s.bestScore })) };
+}
+
 app.get('/api/certificate', auth, courseAccess, (req, res) => {
-  const ov = overview(req.user.id);
-  if (!ov.completed) return res.status(403).json({ error: 'Pass every section to receive your certificate.' });
-  const rows = db.prepare('SELECT section_id, best_score, passed_at FROM progress WHERE user_id=?').all(req.user.id);
-  const date = Math.max(...rows.map((r) => r.passed_at || 0));
-  const avg = Math.round((rows.reduce((a, r) => a + r.best_score, 0) / rows.length) * 10) / 10;
-  res.json({ name: req.user.name, date, average: avg, sections: ov.sections.map((s) => ({ title: s.title, score: s.bestScore })) });
+  const c = certificateData(req.user);
+  if (!c) return res.status(403).json({ error: 'Pass every section to receive your certificate.' });
+  res.json({ name: c.name, date: c.completedAt, average: c.average, number: c.number, org: c.org, sections: c.sections });
+});
+
+app.get('/api/certificate/pdf', auth, courseAccess, (req, res) => {
+  const c = certificateData(req.user);
+  if (!c) return res.status(403).json({ error: 'Pass every section to receive your certificate.' });
+  audit(req, req.user, 'certificate_downloaded', req.user.id, c.number);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'attachment; filename="Fire-Safety-Certificate-' + c.number + '.pdf"');
+  renderCertificate(c).pipe(res);
 });
 
 // ======================= ADMIN ROUTES =======================
