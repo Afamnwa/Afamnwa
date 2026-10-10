@@ -21,7 +21,7 @@ const SIGNATORY = process.env.SIGNATORY_NAME || '';
 
 const PROD = process.env.NODE_ENV === 'production';
 // Administrators and Super Admins must enter an emailed code after their password. ADMIN_2FA=off is an emergency switch.
-const ADMIN_2FA = String(process.env.ADMIN_2FA || 'on').toLowerCase() !== 'off';
+const ADMIN_2FA = String(process.env.ADMIN_2FA || 'off').toLowerCase() !== 'off';
 const PORT = Number(process.env.PORT || 3000);
 const COOKIE = 'fsa_session';
 const SESSION_HOURS = 8;
