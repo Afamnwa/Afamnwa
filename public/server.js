@@ -9,14 +9,18 @@ const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-const { db, secrets, audit } = require('./db');
-const { sendOtp, configured: smtpConfigured } = require('./mail');
+const { db, secrets, audit, getSetting, setSetting, delSetting } = require('./db');
+const backup = require('./backup');
+const PDFDocument = require('pdfkit');
+const { sendOtp, sendTest, configured: smtpConfigured, provider: mailProvider, FROM: MAIL_FROM_ADDR } = require('./mail');
 const { PASS_MARK, sections } = require('./content');
 const { renderCertificate, certificateNumber } = require('./cert');
 const ORG_NAME = process.env.ORG_NAME || 'City of Refuge';
 const SIGNATORY = process.env.SIGNATORY_NAME || '';
 
 const PROD = process.env.NODE_ENV === 'production';
+// Administrators and Super Admins must enter an emailed code after their password. ADMIN_2FA=off is an emergency switch.
+const ADMIN_2FA = String(process.env.ADMIN_2FA || 'on').toLowerCase() !== 'off';
 const PORT = Number(process.env.PORT || 3000);
 const COOKIE = 'fsa_session';
 const SESSION_HOURS = 8;
@@ -29,7 +33,9 @@ const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12); // keeps login ti
 
 const app = express();
 app.disable('x-powered-by');
-if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+// Behind Render's proxy the real visitor IP is in X-Forwarded-For. Render sets RENDER=true, so trust it automatically there.
+const TRUST = process.env.TRUST_PROXY || (process.env.RENDER ? '1' : '');
+if (TRUST) app.set('trust proxy', Number(TRUST) || 1);
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -53,6 +59,8 @@ app.use(helmet({
   hsts: PROD ? { maxAge: 31536000, includeSubDomains: true } : false,
   crossOriginEmbedderPolicy: false
 }));
+// Image uploads (base64 in JSON) need a bigger body limit than the rest of the API.
+app.use('/api/admin/assets', express.json({ limit: '700kb' }));
 app.use(express.json({ limit: '20kb' }));
 app.use(cookieParser());
 
@@ -107,8 +115,9 @@ function setSession(res, user) {
 // ---------- OTP ----------
 const hashOtp = (userId, purpose, code) => crypto.createHmac('sha256', secrets.OTP_SECRET).update(`${userId}:${purpose}:${code}`).digest('hex');
 async function issueOtp(user, purpose) {
-  const last = db.prepare('SELECT created_at FROM otps WHERE user_id=? AND purpose=? ORDER BY id DESC LIMIT 1').get(user.id, purpose);
-  if (last && now() - last.created_at < OTP_RESEND_MS) return false; // cooldown
+  const last = db.prepare('SELECT created_at, used, expires_at FROM otps WHERE user_id=? AND purpose=? ORDER BY id DESC LIMIT 1').get(user.id, purpose);
+  // Cooldown only while an earlier code is still valid; a used or expired code never blocks a fresh one.
+  if (last && !last.used && last.expires_at > now() && now() - last.created_at < OTP_RESEND_MS) return false;
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
   db.prepare('UPDATE otps SET used=1 WHERE user_id=? AND purpose=? AND used=0').run(user.id, purpose);
   db.prepare('INSERT INTO otps (user_id,purpose,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)')
@@ -141,8 +150,10 @@ function auth(req, res, next) {
     req.user = user; next();
   } catch (_) { res.clearCookie(COOKIE); res.status(401).json({ error: 'Session expired. Please sign in again.' }); }
 }
-const adminOnly = (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required.' }));
-const courseAccess = (req, res, next) => (req.user.course_access || req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Your course access has not been granted yet. Please contact an administrator.', code: 'NO_ACCESS' }));
+const isAdminRole = (r) => r === 'admin' || r === 'superadmin';
+const adminOnly = (req, res, next) => (isAdminRole(req.user.role) ? next() : res.status(403).json({ error: 'Admin access required.' }));
+const superOnly = (req, res, next) => (req.user.role === 'superadmin' ? next() : res.status(403).json({ error: 'Only a Super Admin can do this.' }));
+const courseAccess = (req, res, next) => (req.user.course_access || isAdminRole(req.user.role) ? next() : res.status(403).json({ error: 'Your course access has not been granted yet. Please contact an administrator.', code: 'NO_ACCESS' }));
 
 // ======================= AUTH ROUTES =======================
 const GENERIC_CODE_ERR = 'That code is invalid or has expired.';
@@ -212,8 +223,23 @@ app.post('/api/auth/login', authLimiter, wrap(async (req, res) => {
     await issueOtp(user, 'verify');
     return res.status(403).json({ error: 'Please confirm your email first. We sent you a new code.', needsVerification: true });
   }
+  if (ADMIN_2FA && isAdminRole(user.role)) { // step 2 of 2: emailed code (see /api/auth/login-verify)
+    await issueOtp(user, 'login');
+    return res.json({ ok: true, needs2fa: true, message: 'We emailed a 6-digit sign-in code to your address.' });
+  }
   db.prepare('UPDATE users SET failed_logins=0, locked_until=0, last_login=? WHERE id=?').run(now(), user.id);
   audit(req, user, 'login', user.id);
+  setSession(res, user);
+  res.json({ ok: true, user: publicUser(getUserById(user.id)) });
+}));
+
+app.post('/api/auth/login-verify', otpLimiter, wrap(async (req, res) => {
+  const email = normEmail(req.body.email);
+  const user = validEmail(email) ? getUserByEmail(email) : null;
+  if (!user || !ADMIN_2FA || !isAdminRole(user.role) || user.status !== 'active' || !user.email_verified || user.locked_until > now()
+      || !checkOtp(user, 'login', req.body.otp)) return res.status(400).json({ error: GENERIC_CODE_ERR });
+  db.prepare('UPDATE users SET failed_logins=0, locked_until=0, last_login=? WHERE id=?').run(now(), user.id);
+  audit(req, user, 'login', user.id, 'with email code');
   setSession(res, user);
   res.json({ ok: true, user: publicUser(getUserById(user.id)) });
 }));
@@ -301,6 +327,7 @@ app.post('/api/course/:id/lesson-complete', auth, courseAccess, (req, res) => {
   if (statusOf(i, progressMap(req.user.id)) === 'locked') return res.status(403).json({ error: 'Section is locked.' });
   ensureProgress(req.user.id, sections[i].id);
   db.prepare('UPDATE progress SET lesson_done=1, updated_at=? WHERE user_id=? AND section_id=?').run(now(), req.user.id, sections[i].id);
+  audit(req, req.user, 'lesson_complete', req.user.id, sections[i].id);
   res.json({ ok: true });
 });
 
@@ -335,24 +362,26 @@ app.post('/api/course/:id/quiz', quizLimiter, auth, courseAccess, (req, res) => 
     db.prepare('INSERT INTO attempts (user_id,section_id,correct,total,score,passed,created_at) VALUES (?,?,?,?,?,?,?)')
       .run(req.user.id, s.id, correct, total, score, passed ? 1 : 0, now());
   })();
+  audit(req, req.user, 'quiz_attempt', req.user.id, `${s.id}: ${correct}/${total} = ${score}% ${passed ? 'passed' : 'not passed'}`);
   res.json({ score, correct, total, passed, passMark: PASS_MARK, results, overview: overview(req.user.id),
     next: passed && sections[i + 1] ? sections[i + 1].id : null });
 });
 
+const asBuf = (v) => (v instanceof Uint8Array && v.length ? Buffer.from(v) : null); // BLOBs may come back as Buffer or Uint8Array
 function certificateData(user) {
   const ov = overview(user.id);
   if (!ov.completed) return null;
-  const rows = db.prepare('SELECT best_score, passed_at FROM progress WHERE user_id=?').all(user.id);
+  const rows = db.prepare('SELECT passed_at FROM progress WHERE user_id=?').all(user.id);
   const date = Math.max(...rows.map((r) => r.passed_at || 0)) || Date.now();
-  const average = Math.round((rows.reduce((a, r) => a + r.best_score, 0) / rows.length) * 10) / 10;
-  return { name: user.name, completedAt: date, average, passMark: PASS_MARK, org: ORG_NAME, signatory: SIGNATORY,
-    number: certificateNumber(user.id, date), sections: ov.sections.map((s) => ({ title: s.title, score: s.bestScore })) };
+  return { name: user.name, completedAt: date, org: ORG_NAME, number: certificateNumber(user.id, date),
+    signatory: getSetting('signatory_name') || SIGNATORY, signatoryTitle: getSetting('signatory_title') || '',
+    signature: asBuf(getSetting('signature_image')), logo: asBuf(getSetting('logo_image')) };
 }
 
 app.get('/api/certificate', auth, courseAccess, (req, res) => {
   const c = certificateData(req.user);
   if (!c) return res.status(403).json({ error: 'Pass every section to receive your certificate.' });
-  res.json({ name: c.name, date: c.completedAt, average: c.average, number: c.number, org: c.org, sections: c.sections });
+  res.json({ name: c.name, date: c.completedAt, number: c.number, org: c.org });
 });
 
 app.get('/api/certificate/pdf', auth, courseAccess, (req, res) => {
@@ -372,7 +401,15 @@ const userRow = (u) => {
   const passed = db.prepare('SELECT COUNT(*) c FROM progress WHERE user_id=? AND passed=1').get(u.id).c;
   return { ...publicUser(u), locked: u.locked_until > now(), passedSections: passed, totalSections: sections.length, percent: Math.round((passed / sections.length) * 100) };
 };
-const activeAdminCount = () => db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND status='active'").get().c;
+const activeAdminCount = () => db.prepare("SELECT COUNT(*) c FROM users WHERE role IN ('admin','superadmin') AND status='active'").get().c;
+const activeSuperCount = () => db.prepare("SELECT COUNT(*) c FROM users WHERE role='superadmin' AND status='active'").get().c;
+// A normal Admin may not change, reset, sign out or delete a Super Admin account.
+admin.param('id', (req, res, next, id) => {
+  if (req.method === 'GET') return next();
+  const t = getUserById(Number(id));
+  if (t && t.role === 'superadmin' && req.user.role !== 'superadmin') return res.status(403).json({ error: 'Only a Super Admin can change a Super Admin account.' });
+  next();
+});
 const toBool = (v) => (v === true || v === 1 || v === '1' || v === 'true' ? 1 : 0);
 
 admin.get('/stats', (req, res) => {
@@ -412,7 +449,8 @@ admin.post('/users', wrap(async (req, res) => {
   const pw = passwordProblem(req.body.password);
   if (pw) return res.status(400).json({ error: pw });
   if (getUserByEmail(email)) return res.status(409).json({ error: 'That email is already registered.' });
-  const role = req.body.role === 'admin' ? 'admin' : 'learner';
+  const role = ['admin', 'superadmin'].includes(req.body.role) ? req.body.role : 'learner';
+  if (role === 'superadmin' && req.user.role !== 'superadmin') return res.status(403).json({ error: 'Only a Super Admin can create a Super Admin.' });
   const hash = await bcrypt.hash(req.body.password, 12);
   const r = db.prepare('INSERT INTO users (email,name,password_hash,role,email_verified,course_access,must_change_password,created_at) VALUES (?,?,?,?,?,?,1,?)')
     .run(email, name, hash, role, req.body.email_verified === false ? 0 : 1, req.body.course_access === false ? 0 : 1, now());
@@ -432,12 +470,18 @@ admin.patch('/users/:id', (req, res) => {
     if (other && other.id !== u.id) return res.status(409).json({ error: 'That email is already registered.' });
     next.email = e;
   }
-  if (b.role !== undefined) { if (!['learner', 'admin'].includes(b.role)) return res.status(400).json({ error: 'Invalid role.' }); next.role = b.role; }
+  if (b.role !== undefined) {
+    if (!['learner', 'admin', 'superadmin'].includes(b.role)) return res.status(400).json({ error: 'Invalid role.' });
+    if (b.role === 'superadmin' && u.role !== 'superadmin' && req.user.role !== 'superadmin') return res.status(403).json({ error: 'Only a Super Admin can make someone a Super Admin.' });
+    next.role = b.role;
+  }
   if (b.status !== undefined) { if (!['active', 'suspended'].includes(b.status)) return res.status(400).json({ error: 'Invalid status.' }); next.status = b.status; }
   if (b.course_access !== undefined) next.course_access = toBool(b.course_access);
   if (b.email_verified !== undefined) next.email_verified = toBool(b.email_verified);
-  const losesAdmin = u.role === 'admin' && u.status === 'active' && (next.role !== 'admin' || next.status !== 'active');
+  const losesAdmin = isAdminRole(u.role) && u.status === 'active' && (!isAdminRole(next.role) || next.status !== 'active');
   if (losesAdmin && activeAdminCount() <= 1) return res.status(400).json({ error: 'You cannot remove or suspend the last active administrator.' });
+  const losesSuper = u.role === 'superadmin' && u.status === 'active' && (next.role !== 'superadmin' || next.status !== 'active');
+  if (losesSuper && activeSuperCount() <= 1) return res.status(400).json({ error: 'You cannot remove or suspend the last active Super Admin.' });
   const securityChange = next.role !== u.role || next.status !== u.status || next.email !== u.email;
   db.prepare('UPDATE users SET name=?,email=?,role=?,status=?,course_access=?,email_verified=?,token_version=token_version+? WHERE id=?')
     .run(next.name, next.email, next.role, next.status, next.course_access, next.email_verified, securityChange ? 1 : 0, u.id);
@@ -515,6 +559,84 @@ admin.delete('/users/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Super Admin only: certificate signature / logo ----------
+const ASSETS = { signature: 'signature_image', logo: 'logo_image' };
+const MAX_IMAGE_BYTES = 400 * 1024;
+function imageMime(b) {
+  if (b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  return null;
+}
+const assetInfo = (kind) => { const b = asBuf(getSetting(ASSETS[kind])); const row = db.prepare('SELECT updated_at FROM settings WHERE key=?').get(ASSETS[kind]); return { has: !!b, bytes: b ? b.length : 0, updatedAt: row ? row.updated_at : null }; };
+
+admin.get('/certificate-settings', superOnly, (req, res) => {
+  res.json({ signature: assetInfo('signature'), logo: assetInfo('logo'),
+    signatoryName: getSetting('signatory_name') || SIGNATORY, signatoryTitle: getSetting('signatory_title') || '', maxKb: MAX_IMAGE_BYTES / 1024 });
+});
+admin.put('/certificate-settings', superOnly, (req, res) => {
+  const name = cleanName(req.body.signatoryName).slice(0, 60), title = cleanName(req.body.signatoryTitle).slice(0, 60);
+  if (name) setSetting('signatory_name', name); else delSetting('signatory_name');
+  if (title) setSetting('signatory_title', title); else delSetting('signatory_title');
+  audit(req, req.user, 'cert_signatory_changed', null, `${name || '(none)'} / ${title || '(default title)'}`);
+  res.json({ ok: true });
+});
+admin.get('/assets/:kind', superOnly, (req, res) => {
+  if (!ASSETS[req.params.kind]) return res.status(404).json({ error: 'Not found.' });
+  const b = asBuf(getSetting(ASSETS[req.params.kind]));
+  if (!b) return res.status(404).json({ error: 'Nothing uploaded yet.' });
+  res.set('Content-Type', imageMime(b) || 'application/octet-stream').send(b);
+});
+admin.post('/assets/:kind', superOnly, (req, res) => {
+  const kind = req.params.kind;
+  if (!ASSETS[kind]) return res.status(404).json({ error: 'Not found.' });
+  const raw = String(req.body.data || '').replace(/^data:[^,]*,/, '');
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(raw) || !raw) return res.status(400).json({ error: 'Please choose an image file.' });
+  const buf = Buffer.from(raw, 'base64');
+  if (buf.length > MAX_IMAGE_BYTES) return res.status(413).json({ error: `Image is too large. Maximum is ${MAX_IMAGE_BYTES / 1024} KB.` });
+  if (!imageMime(buf)) return res.status(400).json({ error: 'Only PNG or JPG images are accepted.' });
+  try { new PDFDocument().openImage(buf); } catch (_) { return res.status(400).json({ error: 'That image could not be read. Save it again as a standard (non-interlaced) PNG or a JPG.' }); }
+  setSetting(ASSETS[kind], buf);
+  audit(req, req.user, 'cert_' + kind + '_uploaded', null, `${imageMime(buf)} ${buf.length} bytes`);
+  res.json({ ok: true, ...assetInfo(kind) });
+});
+admin.delete('/assets/:kind', superOnly, (req, res) => {
+  if (!ASSETS[req.params.kind]) return res.status(404).json({ error: 'Not found.' });
+  delSetting(ASSETS[req.params.kind]);
+  audit(req, req.user, 'cert_' + req.params.kind + '_removed');
+  res.json({ ok: true });
+});
+
+// ---------- Super Admin only: email check ----------
+admin.get('/email-status', superOnly, (req, res) => res.json({ provider: mailProvider, from: MAIL_FROM_ADDR, twoFactor: ADMIN_2FA }));
+admin.post('/email-test', superOnly, wrap(async (req, res) => {
+  try { await sendTest(req.user.email); audit(req, req.user, 'email_test', req.user.id, 'sent'); res.json({ ok: true, to: req.user.email, provider: mailProvider }); }
+  catch (e) { audit(req, req.user, 'email_test', req.user.id, 'failed: ' + e.message); res.status(502).json({ error: e.message }); }
+}));
+
+// ---------- Super Admin only: backup ----------
+admin.get('/backup/status', superOnly, (req, res) => {
+  res.json({ ...backup.status, configured: backup.githubConfigured(), counts: backup.counts(), delaySeconds: backup.cfg().delayMs / 1000 });
+});
+admin.post('/backup/run', superOnly, wrap(async (req, res) => {
+  audit(req, req.user, 'backup_manual', null);
+  try { const r = await backup.runNow(true); res.json({ ok: true, ...r }); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+}));
+admin.get('/backup/download', superOnly, (req, res) => {
+  audit(req, req.user, 'backup_downloaded');
+  res.set({ 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="fire-safety-academy-backup-${new Date().toISOString().slice(0, 10)}.json"` });
+  res.send(backup.currentText());
+});
+admin.post('/backup/restore', superOnly, wrap(async (req, res) => {
+  if (req.body.confirm !== 'RESTORE') return res.status(400).json({ error: 'Type RESTORE to confirm.' });
+  try {
+    const c = await backup.restoreFromGithub();
+    audit(null, null, 'backup_restored', null, `by ${req.user.email}: ${c.users} users`);
+    res.clearCookie(COOKIE, { path: '/' });
+    res.json({ ok: true, counts: c });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+}));
+
 admin.get('/audit', (req, res) => {
   res.json({ events: db.prepare('SELECT id, actor_email, action, target_id, detail, ip, created_at FROM audit ORDER BY id DESC LIMIT 150').all() });
 });
@@ -532,8 +654,14 @@ app.use((err, req, res, next) => {
 // Housekeeping: remove old OTP rows
 setInterval(() => db.prepare('DELETE FROM otps WHERE created_at < ?').run(now() - 24 * 3600 * 1000), 3600 * 1000).unref();
 
-app.listen(PORT, () => {
+(async () => {
+  try { await backup.init(); } catch (e) { console.error('Backup start-up problem:', e.message); }
+  app.listen(PORT, () => {
   console.log(`Fire Safety Academy running on http://localhost:${PORT}`);
-  if (!smtpConfigured) console.log('NOTE: SMTP is not configured. Verification codes are printed here instead of being emailed. Set SMTP_* in .env for real email.');
+  if (!smtpConfigured) console.log('NOTE: No email service is configured, so codes are only printed in this log and nobody receives them. Set RESEND_API_KEY (or SMTP_*) to send real email.');
   if (!PROD) console.log('NOTE: NODE_ENV is not "production". Set NODE_ENV=production behind HTTPS to enable Secure cookies and HSTS.');
-});
+  });
+})();
+
+// Render stops the old instance on every deploy: push any change still waiting before exiting.
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => { try { await backup.flush(8000); } finally { process.exit(0); } });

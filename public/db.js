@@ -30,13 +30,12 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 try { fs.chmodSync(path.join(DATA_DIR, 'academy.db'), 0o600); } catch (_) {}
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
+const usersDDL = (name) => `CREATE TABLE IF NOT EXISTS ${name} (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
   name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'learner' CHECK (role IN ('learner','admin')),
+  role TEXT NOT NULL DEFAULT 'learner' CHECK (role IN ('learner','admin','superadmin')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
   email_verified INTEGER NOT NULL DEFAULT 0,
   course_access INTEGER NOT NULL DEFAULT 1,
@@ -46,18 +45,29 @@ CREATE TABLE IF NOT EXISTS users (
   must_change_password INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   last_login INTEGER
-);
-CREATE TABLE IF NOT EXISTS otps (
+)`;
+
+db.exec(usersDDL('users') + ';\n');
+
+const OTPS_DDL = `CREATE TABLE IF NOT EXISTS otps (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  purpose TEXT NOT NULL CHECK (purpose IN ('verify','reset')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('verify','reset','login')),
   code_hash TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   used INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_otps_user ON otps(user_id, purpose);
+CREATE INDEX IF NOT EXISTS idx_otps_user ON otps(user_id, purpose);`;
+// Older databases only allow 'verify'/'reset' codes. One-time codes are short-lived, so just recreate the table.
+(function migrateOtps() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='otps'").get();
+  if (row && !row.sql.includes("'login'")) db.exec('DROP TABLE otps');
+})();
+db.exec(OTPS_DDL);
+
+db.exec(`
 CREATE TABLE IF NOT EXISTS progress (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   section_id TEXT NOT NULL,
@@ -90,17 +100,46 @@ CREATE TABLE IF NOT EXISTS audit (
   ip TEXT,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value,
+  updated_at INTEGER NOT NULL
+);
 `);
 
+// Migration: databases created before the Super Admin role have a CHECK constraint that rejects it.
+// SQLite cannot alter a CHECK, so rebuild the users table once (data and ids are kept).
+(function migrateUsersRole() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
+  if (!row || row.sql.includes("'superadmin'")) return;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(usersDDL('users_new'));
+      db.exec('INSERT INTO users_new SELECT * FROM users');
+      db.exec('DROP TABLE users');
+      db.exec('ALTER TABLE users_new RENAME TO users');
+    })();
+    console.log('Database upgraded: Super Admin role enabled.');
+  } finally { db.pragma('foreign_keys = ON'); }
+})();
+
+const getSetting = (key) => { const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key); return r ? r.value : null; };
+const setSetting = (key, value) => db.prepare('INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at').run(key, value, Date.now());
+const delSetting = (key) => db.prepare('DELETE FROM settings WHERE key=?').run(key);
+
+// Every audited event also pings `hooks.onChange` (used to schedule the GitHub backup).
+const hooks = { onChange: null };
 function audit(req, actor, action, targetId, detail) {
   db.prepare('INSERT INTO audit (actor_id, actor_email, action, target_id, detail, ip, created_at) VALUES (?,?,?,?,?,?,?)')
     .run(actor ? actor.id : null, actor ? actor.email : null, action, targetId || null,
       detail ? String(detail).slice(0, 500) : null, req && req.ip ? req.ip : null, Date.now());
+  if (hooks.onChange) { try { hooks.onChange(); } catch (_) { /* backup must never break a request */ } }
 }
 
-// Seed the first admin account. Set ADMIN_EMAIL / ADMIN_PASSWORD, otherwise a random password is printed once.
+// Seed the first account (a Super Admin). Set ADMIN_EMAIL / ADMIN_PASSWORD, otherwise a random password is printed once.
 function seedAdmin() {
-  const exists = db.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").get();
+  const exists = db.prepare("SELECT id FROM users WHERE role IN ('admin','superadmin') LIMIT 1").get();
   if (exists) return;
   const email = (process.env.ADMIN_EMAIL || 'admin@example.com').toLowerCase();
   let password = process.env.ADMIN_PASSWORD;
@@ -108,12 +147,42 @@ function seedAdmin() {
   if (!password) { password = crypto.randomBytes(9).toString('base64url') + 'aA1'; generated = true; }
   const hash = bcrypt.hashSync(password, 12);
   db.prepare(`INSERT INTO users (email,name,password_hash,role,email_verified,must_change_password,created_at)
-              VALUES (?,?,?,?,1,?,?)`).run(email, 'Administrator', hash, 'admin', generated ? 1 : 0, Date.now());
-  console.log('\n=== FIRST RUN: admin account created ===');
+              VALUES (?,?,?,?,1,?,?)`).run(email, 'Super Administrator', hash, 'superadmin', generated ? 1 : 0, Date.now());
+  console.log('\n=== FIRST RUN: Super Admin account created ===');
   console.log('  Email   :', email);
   if (generated) console.log('  Password:', password, '(shown once. You will be asked to change it at first login)');
   console.log('========================================\n');
 }
 seedAdmin();
 
-module.exports = { db, secrets, audit };
+// Make sure at least one Super Admin exists (needed to upload the certificate signature).
+// SUPERADMIN_EMAIL promotes that account; otherwise, if there is none, the oldest admin is promoted.
+function ensureSuperAdmin() {
+  const wanted = (process.env.SUPERADMIN_EMAIL || '').trim().toLowerCase();
+  let target = null;
+  if (wanted) {
+    const u = db.prepare('SELECT * FROM users WHERE email=?').get(wanted);
+    if (!u) { // no such account yet: create it (password from SUPERADMIN_PASSWORD, or a random one printed once)
+      let password = process.env.SUPERADMIN_PASSWORD, generated = false;
+      if (!password) { password = crypto.randomBytes(9).toString('base64url') + 'aA1'; generated = true; }
+      db.prepare(`INSERT INTO users (email,name,password_hash,role,email_verified,must_change_password,created_at)
+                  VALUES (?,?,?,?,1,?,?)`).run(wanted, 'Super Administrator', bcrypt.hashSync(password, 12), 'superadmin', generated ? 1 : 0, Date.now());
+      console.log(`\n=== Super Admin account created for ${wanted} ===`);
+      if (generated) console.log('  Password:', password, '(shown once. You will be asked to change it at first login)');
+      console.log('========================================\n');
+      return;
+    }
+    if (!u.email_verified) { console.log(`SUPERADMIN_EMAIL ${wanted} is registered but its email is not confirmed yet. Confirm it with the emailed code, then restart.`); }
+    else if (u.status === 'active') target = u;
+  }
+  if (!target && !db.prepare("SELECT id FROM users WHERE role='superadmin' LIMIT 1").get()) {
+    target = db.prepare("SELECT * FROM users WHERE role='admin' AND status='active' ORDER BY id LIMIT 1").get();
+  }
+  if (!target || target.role === 'superadmin') return;
+  db.prepare("UPDATE users SET role='superadmin', token_version=token_version+1 WHERE id=?").run(target.id);
+  audit(null, null, 'system_promote_superadmin', target.id, target.email);
+  console.log(`Account ${target.email} is now a Super Admin.`);
+}
+ensureSuperAdmin();
+
+module.exports = { db, secrets, audit, hooks, getSetting, setSetting, delSetting, seedAdmin, ensureSuperAdmin, DATA_DIR };
