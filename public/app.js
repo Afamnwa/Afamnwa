@@ -486,7 +486,7 @@
 
   // ---------- Super Admin: certificate signature / logo / backup ----------
   async function viewAdminSettings() {
-    const [cs, bk] = await Promise.all([api('/admin/certificate-settings'), api('/admin/backup/status')]);
+    const [cs, bk, em] = await Promise.all([api('/admin/certificate-settings'), api('/admin/backup/status'), api('/admin/email-status')]);
     const reload = () => viewAdminSettings();
 
     function imageCard(kind, title, help, info) {
@@ -507,6 +507,20 @@
       const del = info.has ? h('button', { class: 'btn secondary', type: 'button', on: { click: async () => { if (!confirm('Remove the ' + kind + '?')) return; try { await api('/admin/assets/' + kind, 'DELETE'); toast(title + ' removed.'); await reload(); } catch (ex) { toast(ex.message, true); } } } }, 'Remove') : null;
       return h('div', { class: 'card' }, h('h3', {}, title), h('p', { class: 'muted small' }, help), err, preview, h('div', { class: 'field' }, file), h('div', { class: 'row' }, up, del));
     }
+
+    const mailCard = (() => {
+      const out = h('div', { class: 'hidden' });
+      const b = h('button', { class: 'btn', type: 'button' }, 'Send test email to me');
+      b.addEventListener('click', () => submitting(b, async () => {
+        try { const r = await api('/admin/email-test', 'POST'); showMsg(out, 'Sent to ' + r.to + ' using ' + r.provider + '. Check your inbox and spam folder.', 'ok'); }
+        catch (ex) { showMsg(out, ex.message); }
+      }));
+      const label = { resend: 'Resend', smtp: 'SMTP', none: 'not set up' }[em.provider];
+      return h('div', { class: 'card' }, h('h3', {}, 'Email (sign-in and confirmation codes)'),
+        h('p', {}, h('b', {}, 'Email service: '), label), h('p', {}, h('b', {}, 'Sending from: '), em.from),
+        em.provider === 'none' ? h('div', { class: 'alert err' }, 'No email service is set up, so nobody receives codes. In Render, add RESEND_API_KEY and MAIL_FROM (an address on your verified Resend domain), then restart.') : null,
+        h('p', { class: 'muted small' }, 'Admin two-step sign-in is ' + (em.twoFactor ? 'ON' : 'OFF') + '.'), out, b);
+    })();
 
     const nameIn = h('input', { type: 'text', maxlength: 60, value: cs.signatoryName || '' });
     const titleIn = h('input', { type: 'text', maxlength: 60, value: cs.signatoryTitle || '', placeholder: 'Authorised signatory' });
@@ -539,7 +553,7 @@
       imageCard('signature', 'Certificate signature', 'Upload a PNG (transparent background works best) or JPG, up to ' + cs.maxKb + ' KB. It is printed above the signature line on every certificate.', cs.signature),
       who,
       imageCard('logo', 'Certificate logo (optional)', 'Replaces the default logo on certificates. PNG or JPG, up to ' + cs.maxKb + ' KB.', cs.logo),
-      backupCard), { admin: true, wide: true }));
+      mailCard, backupCard), { admin: true, wide: true }));
   }
 
   // ---------- router ----------
