@@ -49,7 +49,7 @@
   const isSuper = (u) => !!u && u.role === 'superadmin';
   const ROLE_LABEL = { learner: 'Learner', admin: 'Administrator', superadmin: 'Super Admin' };
   const go = (p) => { if (location.hash === '#' + p) render(); else location.hash = p; };
-  const PUBLIC = ['login', 'register', 'verify', 'forgot', 'reset'];
+  const PUBLIC = ['login', 'login-code', 'register', 'verify', 'forgot', 'reset'];
 
   // ---------- reusable bits ----------
   function errBox() { return h('div', { class: 'alert err hidden', role: 'alert' }); }
@@ -84,6 +84,7 @@
       err.className = 'hidden';
       try {
         const r = await api('/auth/login', 'POST', { email: email.value, password: pw.value });
+        if (r.needs2fa) { state.pendingEmail = email.value.trim().toLowerCase(); state.verifyNote = r.message; return go('/login-code'); }
         state.user = r.user; state.pendingEmail = '';
         go('/course');
       } catch (ex) {
@@ -144,6 +145,24 @@
       field('Confirmation code', otp), btn,
       h('div', { class: 'auth-links' }, resendButton('verify', err), h('a', { href: '#/login' }, 'Back to sign in')));
     return authShell('Confirm your email', 'Check your inbox for a one-time code', form);
+  }
+
+  // Administrators and Super Admins: second step of sign-in (emailed code)
+  function viewLoginCode() {
+    if (!state.pendingEmail) { go('/login'); return h('div'); }
+    const err = errBox();
+    if (state.verifyNote) { showMsg(err, state.verifyNote, 'info'); state.verifyNote = ''; }
+    const otp = h('input', { type: 'text', class: 'otp-input', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, pattern: '[0-9]*', required: true, 'aria-label': '6-digit code' });
+    otp.addEventListener('input', () => { otp.value = otp.value.replace(/\D/g, '').slice(0, 6); });
+    const btn = h('button', { class: 'btn block', type: 'submit' }, 'Sign in');
+    const form = h('form', { novalidate: true, on: { submit: (e) => { e.preventDefault(); submitting(btn, async () => {
+      try { const r = await api('/auth/login-verify', 'POST', { email: state.pendingEmail, otp: otp.value }); state.user = r.user; state.pendingEmail = ''; go('/course'); }
+      catch (ex) { showMsg(err, ex.message); }
+    }); } } },
+      err, h('p', {}, 'For your security, enter the 6-digit code we emailed to ', h('b', {}, state.pendingEmail), '. It expires in 10 minutes.'),
+      field('Sign-in code', otp), btn,
+      h('div', { class: 'auth-links' }, h('span', { class: 'muted small' }, 'No code? Go back and sign in again to get a new one.'), h('a', { href: '#/login' }, 'Back to sign in')));
+    return authShell('Check your email', 'Two-step sign-in for administrators', form);
   }
 
   function viewForgot() {
@@ -321,16 +340,8 @@
     const ov = await api('/course');
     let certData = null;
     if (ov.completed) { try { certData = await api('/certificate'); } catch (_) {} }
-    const rows = ov.sections.map((s) => h('tr', {},
-      h('td', {}, s.title), h('td', {}, s.attempts ? s.bestScore + '%' : '—'), h('td', {}, String(s.attempts)),
-      h('td', {}, s.status === 'passed' ? h('span', { class: 'pill green' }, 'Passed') : s.status === 'locked' ? h('span', { class: 'pill' }, 'Locked') : s.attempts ? h('span', { class: 'pill red' }, 'Not passed') : h('span', { class: 'pill amber' }, 'Not started')),
-      h('td', {}, s.status === 'locked' ? '' : h('a', { href: '#/course/' + s.id }, s.status === 'passed' ? 'Review' : 'Open'))));
     const main = h('div', {},
       h('div', { class: 'eyebrow' }, 'Conclusion'), h('h1', {}, 'Summary & certificate'),
-      h('div', { class: 'card' },
-        h('div', { class: 'row between' }, h('h3', {}, 'Your training progress'), h('b', {}, `${ov.percent}% complete`)),
-        progressBar(ov.percent, true), h('p', { class: 'muted small' }, `${ov.passed} of ${ov.total} sections passed. The pass mark for each section is ${ov.passMark}%.`),
-        h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Section', 'Best score', 'Attempts', 'Status', ''].map((t) => h('th', {}, t)))), h('tbody', {}, rows)))),
       certData ? certificate(certData) : h('div', { class: 'alert info' }, 'Pass all sections to unlock your certificate of completion.'));
     mount(shell(courseSidebar(ov, 'summary'), main));
   }
@@ -540,7 +551,7 @@
     try {
       if (!state.user) {
         if (!PUBLIC.includes(route)) return go('/login');
-        const views = { login: viewLogin, register: viewRegister, verify: viewVerify, forgot: viewForgot, reset: viewReset };
+        const views = { login: viewLogin, 'login-code': viewLoginCode, register: viewRegister, verify: viewVerify, forgot: viewForgot, reset: viewReset };
         return mount(views[route]());
       }
       if (PUBLIC.includes(route) || route === '') return go('/course');
